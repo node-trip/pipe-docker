@@ -431,6 +431,9 @@ remove_docker_node() {
 }
 
 # Функция резервного копирования данных ноды
+# Функция резервного копирования данных ноды с возможностью создания веб-ссылки
+# Функция резервного копирования данных ноды с возможностью создания веб-ссылки
+# Функция резервного копирования данных ноды с возможностью создания веб-ссылки
 backup_docker_node() {
     echo -e "${BLUE}=== Создание резервной копии данных ноды Pipe Network в Docker ===${NC}"
     
@@ -444,21 +447,103 @@ backup_docker_node() {
         echo -e "${YELLOW}Создаем резервную копию конфигурации...${NC}"
         cp -r "$DOCKER_CONFIG_DIR/config.json" "$BACKUP_PATH/"
         
+        # Создаем информационный файл для миграции
+        migration_file="$BACKUP_PATH/migration_info.txt"
+        echo "=== Информация о резервной копии ===" > "$migration_file"
+        echo "Дата создания: $(date)" >> "$migration_file"
+        echo "Директория бэкапа: $BACKUP_PATH" >> "$migration_file"
+        
+        if command -v jq &> /dev/null; then
+            echo -e "${BLUE}Извлекаем данные из config.json...${NC}"
+            echo "Настройки из config.json:" >> "$migration_file"
+            echo "Имя ноды: $(jq -r '.identity_config.node_name' "$DOCKER_CONFIG_DIR/config.json")" >> "$migration_file"
+            echo "Локация: $(jq -r '.pop_location' "$DOCKER_CONFIG_DIR/config.json")" >> "$migration_file"
+            echo "Invite-код: $(jq -r '.invite_code' "$DOCKER_CONFIG_DIR/config.json")" >> "$migration_file"
+        else
+            echo "jq не установлен, невозможно извлечь детали конфигурации" >> "$migration_file"
+            # вместо этого копируем весь файл конфигурации
+            echo -e "\nРав config.json:" >> "$migration_file"
+            cat "$DOCKER_CONFIG_DIR/config.json" >> "$migration_file"
+        fi
+        
+        # Добавляем инструкции по миграции
+        echo -e "\n=== ИНСТРУКЦИЯ ПО МИГРАЦИИ ===" >> "$migration_file"
+        echo "1. Распакуйте архив pipe_data.tar.gz и скопируйте файл config.json" >> "$migration_file"
+        echo "2. ПРИ ПЕРЕНОСЕ НА ДРУГОЙ СЕРВЕР ОБЯЗАТЕЛЬНО ИЗМЕНИТЕ МЕСТОПОЛОЖЕНИЕ В ФАЙЛЕ config.json!" >> "$migration_file"
+        echo "3. Для определения нового местоположения используйте команду: curl -s https://ipinfo.io/json | jq -r '.region + \", \" + .country'" >> "$migration_file"
+        echo "4. Убедитесь, что порты 80 и 443 свободны на новом сервере" >> "$migration_file"
+        
         # Если контейнер запущен, создаем архив Docker volume
         if docker ps | grep -q "$DOCKER_CONTAINER_NAME"; then
             echo -e "${YELLOW}Контейнер запущен. Создаем архив данных...${NC}"
             # Создаем временный контейнер для архивации данных
+            echo -e "${YELLOW}Поиск файла .pop_state.json в Docker volume...${NC}"
             docker run --rm -v "$DOCKER_VOLUME_NAME:/data" -v "$BACKUP_PATH:/backup" ubuntu:24.04 \
-                bash -c "cd /data && tar czf /backup/pipe_data.tar.gz ."
+                bash -c "cd /data && tar czf /backup/pipe_data.tar.gz . && find / -name '.pop_state.json' -type f 2>/dev/null && find /data -name '.pop_state.json' -type f -exec cp {} /backup/ \; && if [ -f /data/.pop_state.json ]; then cp /data/.pop_state.json /backup/; fi"
+
+            # Также попробуем получить файл напрямую из контейнера
+            docker exec "$DOCKER_CONTAINER_NAME" bash -c 'if [ -f /opt/popcache/.pop_state.json ]; then cat /opt/popcache/.pop_state.json; fi' > "$BACKUP_PATH/.pop_state.json" 2>/dev/null || true
             
             if [ -f "$BACKUP_PATH/pipe_data.tar.gz" ]; then
                 echo -e "${GREEN}Резервная копия данных успешно создана в $BACKUP_PATH/pipe_data.tar.gz${NC}"
                 log_message "Создана резервная копия данных Docker ноды в $BACKUP_PATH"
+                
+                # Создаем архив всего бэкапа для удобства скачивания
+                backup_file="$BACKUP_PATH/pipe_backup_full_$BACKUP_DATE.tar.gz"
+                tar -czf "$backup_file" -C "$BACKUP_DIR" "pipe_docker_backup_$BACKUP_DATE"
+                echo -e "${GREEN}Полный архив создан: $backup_file${NC}"
+                
+                # Запрашиваем, хочет ли пользователь создать веб-ссылку для скачивания
+                echo -e "\n${BLUE}Создать временную ссылку для скачивания резервной копии?${NC}"
+                read -p "Создать временную ссылку? (y/n): " create_temp_link
+                
+                if [[ $create_temp_link == "y" || $create_temp_link == "Y" ]]; then
+                    # Проверяем наличие файла web_backup.sh
+                    # Ищем web_backup.sh в текущей директории, а также в некоторых стандартных путях
+                    web_backup_script="./web_backup.sh"
+                    if [ ! -f "$web_backup_script" ]; then
+                        web_backup_script="$(dirname "$0")/web_backup.sh"
+                    fi
+                    if [ -f "$web_backup_script" ] && [ -x "$web_backup_script" ]; then
+                        # Загружаем функцию создания веб-ссылки
+                        source "$web_backup_script"
+                        # Вызываем функцию создания веб-ссылки
+                        create_web_backup_link "$BACKUP_PATH" "$backup_file" "$migration_file"
+                    else
+                        echo -e "${RED}Скрипт создания веб-ссылки не найден: $web_backup_script${NC}"
+                        echo -e "${YELLOW}Доступ к файлам резервной копии: $BACKUP_PATH${NC}"
+                    fi
+                fi
             else
                 echo -e "${RED}Ошибка при создании архива данных${NC}"
             fi
         else
             echo -e "${YELLOW}Контейнер не запущен. Сохраняем только конфигурацию.${NC}"
+            
+            # Запрашиваем, хочет ли пользователь создать веб-ссылку для скачивания
+            echo -e "\n${BLUE}Создать временную ссылку для скачивания конфигурации?${NC}"
+            read -p "Создать временную ссылку? (y/n): " create_temp_link
+            
+            if [[ $create_temp_link == "y" || $create_temp_link == "Y" ]]; then
+                # Проверяем наличие файла web_backup.sh
+                # Ищем web_backup.sh в текущей директории, а также в некоторых стандартных путях
+                web_backup_script="./web_backup.sh"
+                if [ ! -f "$web_backup_script" ]; then
+                    web_backup_script="$(dirname "$0")/web_backup.sh"
+                fi
+                if [ -f "$web_backup_script" ] && [ -x "$web_backup_script" ]; then
+                    # Загружаем функцию создания веб-ссылки
+                    source "$web_backup_script"
+                    # Создаем простой архив с конфигурацией
+                    backup_file="$BACKUP_PATH/pipe_config_$BACKUP_DATE.tar.gz"
+                    tar -czf "$backup_file" -C "$BACKUP_DIR" "pipe_docker_backup_$BACKUP_DATE"
+                    # Вызываем функцию создания веб-ссылки
+                    create_web_backup_link "$BACKUP_PATH" "$backup_file" "$migration_file"
+                else
+                    echo -e "${RED}Скрипт создания веб-ссылки не найден: $web_backup_script${NC}"
+                    echo -e "${YELLOW}Доступ к файлам резервной копии: $BACKUP_PATH${NC}"
+                fi
+            fi
         fi
         
         echo -e "${GREEN}Резервная копия создана в $BACKUP_PATH${NC}"
