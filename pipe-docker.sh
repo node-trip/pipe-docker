@@ -62,6 +62,7 @@ show_menu() {
     echo "4. Создать резервную копию данных ноды"
     echo "5. Просмотреть логи установки"
     echo "6. Просмотреть логи контейнера"
+    echo "7. Остановить ноду Devnet (если запущена)"
     echo "0. Выход"
     echo
 }
@@ -87,6 +88,38 @@ show_container_logs() {
     else
         echo -e "${RED}Контейнер $DOCKER_CONTAINER_NAME не найден${NC}"
     fi
+    read -n 1 -s -r -p "Нажмите любую клавишу для возврата в меню..."
+}
+
+# Функция для остановки ноды devnet
+stop_devnet_node() {
+    echo -e "${YELLOW}Проверяем наличие ноды Devnet...${NC}"
+
+    if systemctl is-active --quiet pop.service; then
+        echo -e "${YELLOW}Останавливаем ноду Pipe Network Devnet...${NC}"
+        systemctl stop pop.service
+        systemctl disable pop.service
+        echo -e "${GREEN}Нода Pipe Network Devnet остановлена и отключена${NC}"
+    else
+        echo -e "${BLUE}Активная нода Pipe Network Devnet не найдена${NC}"
+    fi
+
+    # Также проверяем сервис pipe-pop на всякий случай
+    if systemctl is-active --quiet pipe-pop.service; then
+        echo -e "${YELLOW}Останавливаем альтернативную ноду Pipe Network Devnet...${NC}"
+        systemctl stop pipe-pop.service
+        systemctl disable pipe-pop.service
+        echo -e "${GREEN}Альтернативная нода Pipe Network Devnet остановлена и отключена${NC}"
+    fi
+    
+    # Проверяем также сервис popcache
+    if systemctl is-active --quiet popcache.service; then
+        echo -e "${YELLOW}Останавливаем сервис popcache...${NC}"
+        systemctl stop popcache.service
+        systemctl disable popcache.service
+        echo -e "${GREEN}Сервис popcache остановлен и отключен${NC}"
+    fi
+
     read -n 1 -s -r -p "Нажмите любую клавишу для возврата в меню..."
 }
 
@@ -447,6 +480,7 @@ while true; do
         4) backup_docker_node ;;
         5) show_logs ;;
         6) show_container_logs ;;
+        7) stop_devnet_node ;;
         0) exit 0 ;;
         *) echo -e "${RED}Неверный выбор${NC}" ;;
     esac
